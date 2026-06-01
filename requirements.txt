@@ -7,7 +7,5 @@ beautifulsoup4
 pymupdf
 python-dotenv
 numpy
-pandas
-scikit-learn
-torch
-torchvision
+torch==2.1.0
+torchvision==0.16.0
