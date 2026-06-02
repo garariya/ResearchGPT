@@ -252,6 +252,8 @@ with left_col:
 
                 if st.button("Select", key=f"select_{i}"):
                     st.session_state.selected_paper_key = doc_id
+                    # One-click single-paper QA scope.
+                    st.session_state.search_scope_document_ids = [doc_id]
 
                 file_path = paper.get("file_path")
                 if file_path and os.path.exists(file_path):
@@ -475,10 +477,15 @@ with main_col:
         for p in st.session_state.paper_library
         if p.get("document_id")
     }
+    # Keep multiselect in sync with the current scope set by the Select button.
+    default_selected_labels = [
+        label for label, did in scope_options.items()
+        if did in st.session_state.search_scope_document_ids
+    ]
     selected_labels = st.multiselect(
         "Search scope (optional)",
         options=list(scope_options.keys()),
-        default=[],
+        default=default_selected_labels,
     )
     st.session_state.search_scope_document_ids = [scope_options[l] for l in selected_labels]
 
