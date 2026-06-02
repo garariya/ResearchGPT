@@ -7,6 +7,15 @@ from src.embedding import generate_embeddings
 from src.vectordb import store_chunks
 from src.rag_pipeline import answer_question
 from src.arxiv_fetcher import search_papers, download_paper
+from src.vectordb import collection
+from src.paper_library import (
+    load_library,
+    save_library,
+    next_document_id,
+    find_duplicate,
+    upsert_paper,
+    delete_paper,
+)
 
 
 st.set_page_config(
@@ -59,22 +68,14 @@ if "library" not in st.session_state:
     st.session_state.library = []
 
 if "paper_library" not in st.session_state:
-    # Paper-level metadata library (deduped).
-    # Items look like:
-    # {
-    #   "title": "...",
-    #   "authors": "...",
-    #   "year": "...",
-    #   "source_type": "pdf" | "arxiv",
-    #   "source_name": "...",
-    #   "pdf_filename": "...",
-    #   "file_path": "...",
-    #   "num_chunks": int | None,
-    # }
-    st.session_state.paper_library = []
+    # Persistent library loaded from disk.
+    st.session_state.paper_library = load_library()
 
 if "selected_paper_key" not in st.session_state:
     st.session_state.selected_paper_key = None
+
+if "search_scope_document_ids" not in st.session_state:
+    st.session_state.search_scope_document_ids = []
 
 
 def _add_to_library(*, source_type, source_name, file_path):
@@ -99,24 +100,26 @@ def _add_to_library(*, source_type, source_name, file_path):
 
 def _paper_key(paper):
     # Stable dedupe key across sessions.
-    return (paper.get("source_type"), paper.get("source_name"), paper.get("pdf_filename"))
+    return paper.get("document_id")
 
 
 def _upsert_paper_library(paper):
     """
     Insert paper-level metadata into session library (deduped).
     """
-    key = _paper_key(paper)
-    existing = {_paper_key(p): i for i, p in enumerate(st.session_state.paper_library)}
-    if key in existing:
-        # Merge fields (keep latest values like num_chunks).
-        idx = existing[key]
-        st.session_state.paper_library[idx] = {**st.session_state.paper_library[idx], **paper}
-    else:
-        st.session_state.paper_library.append(paper)
-
-    # Default selection: most recent paper.
-    st.session_state.selected_paper_key = key
+    st.session_state.paper_library = upsert_paper(
+        st.session_state.paper_library,
+        document_id=paper["document_id"],
+        title=paper["title"],
+        authors=paper["authors"],
+        year=paper["year"],
+        source_type=paper["source_type"],
+        pdf_filename=paper["pdf_filename"],
+        file_path=paper["file_path"],
+        chunk_count=paper.get("chunk_count"),
+    )
+    save_library(st.session_state.paper_library)
+    st.session_state.selected_paper_key = paper["document_id"]
 
 
 def _bootstrap_library_from_disk():
@@ -137,6 +140,9 @@ def _bootstrap_library_from_disk():
     except Exception:
         return
 
+    # Start with persisted library.
+    st.session_state.paper_library = load_library()
+
     for fname in filenames:
         file_path = os.path.join(pdf_dir, fname)
         # We can't reliably recover the arXiv title from the PDF without extra
@@ -148,35 +154,37 @@ def _bootstrap_library_from_disk():
             file_path=file_path,
         )
 
-        # Best-effort: create a corresponding paper_library entry so the left panel
-        # doesn't look empty on fresh sessions.
-        if source_type == "pdf":
-            md = extract_pdf_metadata(file_path)
-            _upsert_paper_library(
-                {
-                    "title": md["title"],
-                    "authors": md["authors"],
-                    "year": md["year"],
-                    "source_type": "pdf",
-                    "source_name": md["title"],
-                    "pdf_filename": fname,
-                    "file_path": file_path,
-                    "num_chunks": None,
-                }
-            )
-        else:
-            _upsert_paper_library(
-                {
-                    "title": fname,
-                    "authors": "Unknown",
-                    "year": "Unknown",
-                    "source_type": "arxiv",
-                    "source_name": fname,
-                    "pdf_filename": fname,
-                    "file_path": file_path,
-                    "num_chunks": None,
-                }
-            )
+        # If a PDF exists on disk but not in the persisted library, add it once.
+        dup = find_duplicate(st.session_state.paper_library, title=fname, pdf_filename=fname)
+        if dup is None:
+            doc_id = next_document_id(st.session_state.paper_library)
+            if source_type == "pdf":
+                md = extract_pdf_metadata(file_path)
+                _upsert_paper_library(
+                    {
+                        "document_id": doc_id,
+                        "title": md["title"],
+                        "authors": md["authors"],
+                        "year": md["year"],
+                        "source_type": "pdf",
+                        "pdf_filename": fname,
+                        "file_path": file_path,
+                        "chunk_count": 0,
+                    }
+                )
+            else:
+                _upsert_paper_library(
+                    {
+                        "document_id": doc_id,
+                        "title": fname,
+                        "authors": "Unknown",
+                        "year": "Unknown",
+                        "source_type": "arxiv",
+                        "pdf_filename": fname,
+                        "file_path": file_path,
+                        "chunk_count": 0,
+                    }
+                )
 
 
 # Ensure the sidebar is populated even on fresh sessions.
@@ -197,26 +205,53 @@ left_col, main_col = st.columns([1, 4], gap="large")
 
 with left_col:
     st.markdown('<div class="rgpt-card">', unsafe_allow_html=True)
-    st.subheader("📚 Paper Library")
+    st.subheader("📚 Knowledge Base")
     if st.button("Refresh library"):
         _bootstrap_library_from_disk()
 
     if not st.session_state.paper_library:
         st.caption("Upload or download papers to build your library.")
     else:
+        # --- Knowledge base statistics ---
+        total_papers = len(st.session_state.paper_library)
+        total_chunks = sum(int(p.get("chunk_count") or 0) for p in st.session_state.paper_library)
+        all_authors = []
+        years = []
+        for p in st.session_state.paper_library:
+            a = (p.get("authors") or "").strip()
+            if a and a != "Unknown":
+                all_authors.extend([x.strip() for x in a.split(",") if x.strip()])
+            y = (p.get("year") or "").strip()
+            if y.isdigit():
+                years.append(int(y))
+
+        st.caption(f"Total Papers: **{total_papers}**")
+        st.caption(f"Total Chunks: **{total_chunks}**")
+        st.caption(f"Total Authors: **{len(set(all_authors))}**" if all_authors else "Total Authors: **0**")
+        if years:
+            st.caption(f"Years Covered: **{min(years)}–{max(years)}**")
+        else:
+            st.caption("Years Covered: **Unknown**")
+
+        st.divider()
+
         for i, paper in enumerate(st.session_state.paper_library):
             title = paper.get("title", "Untitled")
             year = paper.get("year", "Unknown")
             source_type = paper.get("source_type", "unknown")
-            key = _paper_key(paper)
+            doc_id = paper.get("document_id")
+            chunk_count = int(paper.get("chunk_count") or 0)
 
             icon = "📄" if source_type == "pdf" else ("📚" if source_type == "arxiv" else "🔎")
-            label = f"{icon} {title} ({year})"
+            label = f"{icon} {title} ({year}) — {chunk_count} chunks"
 
-            with st.expander(label, expanded=(st.session_state.selected_paper_key == key)):
+            with st.expander(label, expanded=(st.session_state.selected_paper_key == doc_id)):
                 st.caption(paper.get("authors", "Unknown"))
+                st.caption(f"Document ID: `{doc_id}`")
+                st.caption(f"Uploaded: {paper.get('upload_date', 'Unknown')}")
+
                 if st.button("Select", key=f"select_{i}"):
-                    st.session_state.selected_paper_key = key
+                    st.session_state.selected_paper_key = doc_id
 
                 file_path = paper.get("file_path")
                 if file_path and os.path.exists(file_path):
@@ -229,6 +264,15 @@ with left_col:
                         mime="application/pdf",
                         key=f"download_{i}",
                     )
+
+                if st.button("🗑 Remove Paper", key=f"delete_{i}"):
+                    try:
+                        collection.delete(where={"document_id": doc_id})
+                    except Exception as e:
+                        st.error(f"Failed to delete from vector DB: {e}")
+                    st.session_state.paper_library = delete_paper(st.session_state.paper_library, doc_id)
+                    save_library(st.session_state.paper_library)
+                    st.success("Paper removed.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -238,7 +282,7 @@ def _get_selected_paper():
     if st.session_state.selected_paper_key is None:
         return st.session_state.paper_library[-1]
     for p in st.session_state.paper_library:
-        if _paper_key(p) == st.session_state.selected_paper_key:
+        if p.get("document_id") == st.session_state.selected_paper_key:
             return p
     return st.session_state.paper_library[-1]
 
@@ -267,42 +311,67 @@ with main_col:
             _add_to_library(source_type="pdf", source_name=uploaded_file.name, file_path=file_path)
 
             pdf_md = extract_pdf_metadata(file_path)
-            paper_obj = {
-                "title": pdf_md["title"],
-                "authors": pdf_md["authors"],
-                "year": pdf_md["year"],
-                "source_type": "pdf",
-                "source_name": pdf_md["title"],
-                "pdf_filename": uploaded_file.name,
-                "file_path": file_path,
-                "num_chunks": None,
-            }
-            _upsert_paper_library(paper_obj)
-
-            # Process button (IMPORTANT to avoid re-processing)
-            if st.button("Process & Store PDF"):
-
-                text = extract_text(file_path)
-
-                chunks = chunk_text(text)
-
-                embeddings = generate_embeddings(chunks)
-
-                store_chunks(
-                    chunks,
-                    embeddings,
-                    source_type="pdf",
-                    metadata={
+            existing = find_duplicate(
+                st.session_state.paper_library,
+                title=pdf_md["title"],
+                pdf_filename=uploaded_file.name,
+            )
+            if existing is not None:
+                st.warning("This paper already exists in the knowledge base.")
+                doc_id = existing["document_id"]
+            else:
+                doc_id = next_document_id(st.session_state.paper_library)
+                _upsert_paper_library(
+                    {
+                        "document_id": doc_id,
                         "title": pdf_md["title"],
                         "authors": pdf_md["authors"],
                         "year": pdf_md["year"],
-                        "source_name": pdf_md["title"],
+                        "source_type": "pdf",
                         "pdf_filename": uploaded_file.name,
-                    },
+                        "file_path": file_path,
+                        "chunk_count": 0,
+                    }
                 )
 
-                _upsert_paper_library({**paper_obj, "num_chunks": len(chunks)})
-                st.success(f"{len(chunks)} chunks stored in knowledge base!")
+            # Process button (IMPORTANT to avoid re-processing)
+            if st.button("Process & Store PDF"):
+                if existing is not None and int(existing.get("chunk_count") or 0) > 0:
+                    st.warning("Skipping ingestion: already indexed.")
+                else:
+                    text = extract_text(file_path)
+
+                    chunks = chunk_text(text)
+
+                    embeddings = generate_embeddings(chunks)
+
+                    store_chunks(
+                        chunks,
+                        embeddings,
+                        source_type="pdf",
+                        metadata={
+                            "document_id": doc_id,
+                            "title": pdf_md["title"],
+                            "authors": pdf_md["authors"],
+                            "year": pdf_md["year"],
+                            "source_name": pdf_md["title"],
+                            "pdf_filename": uploaded_file.name,
+                        },
+                    )
+
+                    _upsert_paper_library(
+                        {
+                            "document_id": doc_id,
+                            "title": pdf_md["title"],
+                            "authors": pdf_md["authors"],
+                            "year": pdf_md["year"],
+                            "source_type": "pdf",
+                            "pdf_filename": uploaded_file.name,
+                            "file_path": file_path,
+                            "chunk_count": len(chunks),
+                        }
+                    )
+                    st.success(f"{len(chunks)} chunks stored in knowledge base!")
 
 
 # =========================================================
@@ -347,12 +416,22 @@ with main_col:
                         "authors": paper.get("authors", "Unknown"),
                         "year": paper.get("year", "Unknown"),
                         "source_type": "arxiv",
-                        "source_name": paper.get("title", "No Title"),
                         "pdf_filename": os.path.basename(pdf_path),
                         "file_path": pdf_path,
-                        "num_chunks": None,
+                        "chunk_count": 0,
                     }
-                    _upsert_paper_library(paper_obj)
+
+                    existing = find_duplicate(
+                        st.session_state.paper_library,
+                        title=paper_obj["title"],
+                        pdf_filename=paper_obj["pdf_filename"],
+                    )
+                    if existing is not None:
+                        st.warning("This paper already exists in the knowledge base.")
+                        doc_id = existing["document_id"]
+                    else:
+                        doc_id = next_document_id(st.session_state.paper_library)
+                        _upsert_paper_library({**paper_obj, "document_id": doc_id})
 
                     # Auto ingest into RAG pipeline
                     with st.spinner("Extracting text..."):
@@ -370,15 +449,16 @@ with main_col:
                             embeddings,
                             source_type="arxiv",
                             metadata={
+                                "document_id": doc_id,
                                 "title": paper_obj["title"],
                                 "authors": paper_obj["authors"],
                                 "year": paper_obj["year"],
-                                "source_name": paper_obj["source_name"],
+                                "source_name": paper_obj["title"],
                                 "pdf_filename": paper_obj["pdf_filename"],
                             },
                         )
 
-                    _upsert_paper_library({**paper_obj, "num_chunks": len(chunks)})
+                    _upsert_paper_library({**paper_obj, "document_id": doc_id, "chunk_count": len(chunks)})
                     st.success("Paper added to knowledge base!")
                 except Exception as e:
                     st.error(f"Failed to ingest paper: {e}")
@@ -390,11 +470,24 @@ with main_col:
     st.divider()
 
     st.subheader("Ask Questions")
+    scope_options = {
+        f"{p.get('title','Untitled')} ({p.get('year','Unknown')}) [{p.get('document_id')}]": p.get("document_id")
+        for p in st.session_state.paper_library
+        if p.get("document_id")
+    }
+    selected_labels = st.multiselect(
+        "Search scope (optional)",
+        options=list(scope_options.keys()),
+        default=[],
+    )
+    st.session_state.search_scope_document_ids = [scope_options[l] for l in selected_labels]
+
     question = st.text_input("Enter your question")
 
     if st.button("Ask"):
         if question:
-            result = answer_question(question)
+            doc_ids = st.session_state.search_scope_document_ids or None
+            result = answer_question(question, document_ids=doc_ids)
 
             st.subheader("Answer")
             st.write(result["answer"])

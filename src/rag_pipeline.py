@@ -2,9 +2,9 @@ from src.retriever import retrieve
 from src.llm import ask_llm
 
 
-def answer_question(question):
+def answer_question(question, document_ids=None):
 
-    retrieved = retrieve(question)
+    retrieved = retrieve(question, document_ids=document_ids)
 
     docs = [item["text"] for item in retrieved]
     context = "\n\n".join(docs)
@@ -26,9 +26,11 @@ def answer_question(question):
         year = md.get("year", "Unknown")
         chunk_index = md.get("chunk_index")
 
-        key = (source_type, source_name)
+        document_id = md.get("document_id")
+        key = (document_id, source_type, source_name)
         if key not in aggregated:
             aggregated[key] = {
+                "document_id": document_id,
                 "source_type": source_type,
                 "source_name": source_name,
                 "title": title,
@@ -41,9 +43,10 @@ def answer_question(question):
             aggregated[key]["chunk_indices"].add(chunk_index)
 
     sources = []
-    for (_, _), entry in aggregated.items():
+    for (_, _, _), entry in aggregated.items():
         sources.append(
             {
+                "document_id": entry.get("document_id"),
                 "source_type": entry["source_type"],
                 "source_name": entry["source_name"],
                 "title": entry["title"],

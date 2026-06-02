@@ -43,6 +43,7 @@ def store_chunks(chunks, embeddings, source_type, metadata):
     year = metadata.get("year", "Unknown")
     source_name = metadata.get("source_name", title)
     pdf_filename = metadata.get("pdf_filename", "")
+    document_id = metadata.get("document_id", "")
 
     ids = [
         str(uuid.uuid4())
@@ -52,6 +53,7 @@ def store_chunks(chunks, embeddings, source_type, metadata):
     # 1-based chunk_index is more natural for users (Chunk 1, Chunk 2, ...).
     metadatas = [
         {
+            "document_id": document_id,
             "title": title,
             "authors": authors,
             "year": year,
