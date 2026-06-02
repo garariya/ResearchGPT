@@ -1,7 +1,7 @@
 import requests
-from bs4 import BeautifulSoup
 import os
 import time
+import xml.etree.ElementTree as ET
 
 
 _DEFAULT_HEADERS = {
@@ -56,36 +56,31 @@ def search_papers(query, max_results=5):
             f"(status={response.status_code}). Please try again."
         )
 
-    soup = BeautifulSoup(
-        response.text,
-        "xml"
-    )
+    # Parse Atom XML using the Python stdlib to avoid requiring lxml in production.
+    # arXiv returns an Atom feed (http://www.w3.org/2005/Atom).
+    try:
+        root = ET.fromstring(response.text)
+    except ET.ParseError as e:
+        raise RuntimeError("Failed to parse arXiv XML response.") from e
 
-    entries = soup.find_all("entry")
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    entries = root.findall("atom:entry", ns)
 
     papers = []
 
     for entry in entries:
 
-        title = (
-            entry.title.text.strip()
-            if entry.title
-            else "No Title"
-        )
+        title_el = entry.find("atom:title", ns)
+        summary_el = entry.find("atom:summary", ns)
+        id_el = entry.find("atom:id", ns)
 
-        summary = (
-            entry.summary.text.strip()
-            if entry.summary
-            else "No Summary"
-        )
+        title = title_el.text.strip() if (title_el is not None and title_el.text) else "No Title"
+        summary = summary_el.text.strip() if (summary_el is not None and summary_el.text) else "No Summary"
 
-        pdf_url = (
-            entry.id.text.replace(
-                "abs",
-                "pdf"
-            )
-            + ".pdf"
-        )
+        # arXiv id looks like: http://arxiv.org/abs/XXXX.XXXXXvN
+        # Convert to a PDF link: http://arxiv.org/pdf/XXXX.XXXXXvN.pdf
+        abs_url = id_el.text.strip() if (id_el is not None and id_el.text) else ""
+        pdf_url = abs_url.replace("abs", "pdf") + ".pdf" if abs_url else ""
 
         papers.append(
             {
