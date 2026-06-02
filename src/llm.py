@@ -15,14 +15,21 @@ client = Groq(
 def ask_llm(context, question):
 
     prompt = f"""
-    Context:
-    {context}
+You are a research assistant.
 
-    Question:
-    {question}
+Use ONLY the provided context.
 
-    Answer using only
-    the context.
+If the answer cannot be found in the context, say:
+'I could not find sufficient information in the uploaded documents.'
+
+Do not invent facts.
+Provide concise and accurate answers.
+
+Context:
+{context}
+
+Question:
+{question}
     """
 
     response = client.chat.completions.create(

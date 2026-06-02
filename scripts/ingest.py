@@ -11,6 +11,12 @@ chunks = chunk_text(text)
 
 embeddings = generate_embeddings(chunks)
 
-store_chunks(chunks, embeddings)
+# Store with metadata so the CLI ingestion matches the Streamlit app behavior.
+store_chunks(
+    chunks,
+    embeddings,
+    source_type="pdf",
+    source_name="sample.pdf",
+)
 
 print(f"Stored {len(chunks)} chunks successfully!")

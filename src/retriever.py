@@ -10,7 +10,21 @@ def retrieve(query, k=5):
 
     results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=k
+        n_results=k,
+        # Include metadatas so we can build citations downstream.
+        include=["documents", "metadatas"],
     )
 
-    return results["documents"][0]
+    docs = results.get("documents", [[]])[0] or []
+    metadatas = results.get("metadatas", [[]])[0] or []
+
+    retrieved = []
+    for text, metadata in zip(docs, metadatas):
+        retrieved.append(
+            {
+                "text": text,
+                "metadata": metadata or {},
+            }
+        )
+
+    return retrieved
