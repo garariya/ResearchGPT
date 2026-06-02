@@ -25,11 +25,11 @@ except sqlite3.OperationalError as e:
         "exact version used when it was created, or migrate the DB."
     ) from e
 
-def store_chunks(chunks, embeddings, source_type, source_name):
+def store_chunks(chunks, embeddings, source_type, metadata):
     """
     Store chunks + embeddings in ChromaDB, along with per-chunk metadata.
 
-    Added metadata enables professional-style citations (source + chunk indices)
+    Added metadata enables professional-style citations (paper metadata + chunks)
     during retrieval and UI rendering.
     """
     if len(chunks) != len(embeddings):
@@ -37,6 +37,12 @@ def store_chunks(chunks, embeddings, source_type, source_name):
             f"chunks ({len(chunks)}) and embeddings ({len(embeddings)}) "
             "must have the same length"
         )
+
+    title = metadata.get("title", "Unknown")
+    authors = metadata.get("authors", "Unknown")
+    year = metadata.get("year", "Unknown")
+    source_name = metadata.get("source_name", title)
+    pdf_filename = metadata.get("pdf_filename", "")
 
     ids = [
         str(uuid.uuid4())
@@ -46,8 +52,12 @@ def store_chunks(chunks, embeddings, source_type, source_name):
     # 1-based chunk_index is more natural for users (Chunk 1, Chunk 2, ...).
     metadatas = [
         {
+            "title": title,
+            "authors": authors,
+            "year": year,
             "source_type": source_type,
             "source_name": source_name,
+            "pdf_filename": pdf_filename,
             "chunk_index": i + 1,
         }
         for i in range(len(chunks))

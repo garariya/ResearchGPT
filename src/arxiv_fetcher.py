@@ -73,9 +73,23 @@ def search_papers(query, max_results=5):
         title_el = entry.find("atom:title", ns)
         summary_el = entry.find("atom:summary", ns)
         id_el = entry.find("atom:id", ns)
+        author_els = entry.findall("atom:author", ns)
+        published_el = entry.find("atom:published", ns)
 
         title = title_el.text.strip() if (title_el is not None and title_el.text) else "No Title"
         summary = summary_el.text.strip() if (summary_el is not None and summary_el.text) else "No Summary"
+
+        # Authors: "Author A, Author B, ..."
+        authors = []
+        for author_el in author_els:
+            name_el = author_el.find("atom:name", ns)
+            if name_el is not None and name_el.text:
+                authors.append(name_el.text.strip())
+        authors_str = ", ".join(authors) if authors else "Unknown"
+
+        # published: 2023-04-15T12:30:00Z -> year: 2023
+        published = published_el.text.strip() if (published_el is not None and published_el.text) else ""
+        year = published[:4] if len(published) >= 4 and published[:4].isdigit() else "Unknown"
 
         # arXiv id looks like: http://arxiv.org/abs/XXXX.XXXXXvN
         # Convert to a PDF link: http://arxiv.org/pdf/XXXX.XXXXXvN.pdf
@@ -85,6 +99,8 @@ def search_papers(query, max_results=5):
         papers.append(
             {
                 "title": title,
+                "authors": authors_str,
+                "year": year,
                 "summary": summary,
                 "pdf_url": pdf_url
             }

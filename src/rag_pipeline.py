@@ -20,7 +20,10 @@ def answer_question(question):
     for item in retrieved:
         md = item.get("metadata") or {}
         source_type = md.get("source_type", "unknown")
-        source_name = md.get("source_name", "Unknown Source")
+        source_name = md.get("source_name", md.get("title", "Unknown Source"))
+        title = md.get("title", source_name)
+        authors = md.get("authors", "Unknown")
+        year = md.get("year", "Unknown")
         chunk_index = md.get("chunk_index")
 
         key = (source_type, source_name)
@@ -28,6 +31,9 @@ def answer_question(question):
             aggregated[key] = {
                 "source_type": source_type,
                 "source_name": source_name,
+                "title": title,
+                "authors": authors,
+                "year": year,
                 "chunk_indices": set(),
             }
 
@@ -40,6 +46,9 @@ def answer_question(question):
             {
                 "source_type": entry["source_type"],
                 "source_name": entry["source_name"],
+                "title": entry["title"],
+                "authors": entry["authors"],
+                "year": entry["year"],
                 "chunk_indices": sorted(entry["chunk_indices"]),
             }
         )
